@@ -40,56 +40,134 @@ const Dashboard = () => {
       // ignore
     }
 
-    // Subscribe to live updates from Firebase. When updates arrive, update
-    // local state and persist the snapshot to localStorage.
+    // Subscribe to live updates from Firebase. The project appears to store
+    // current readings under `sensors/current` and history under
+    // `sensors/history` (or a top-level `history`). We'll attempt to attach
+    // listeners to those locations and normalize the incoming lowercase
+    // property names to the UI shape.
+    const listeners = [];
     try {
-      const sensorDataRef = ref(db, 'sensorData');
-      const unsubscribe = onValue(sensorDataRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          const currentSensors = data.sensors || {};
-          const currentFireRisk = data.fireRisk || false;
-          const currentFireRiskProbability = data.fireRiskProbability || 0;
-          const currentAlarmOn = data.alarmOn || false;
+      const normalize = (raw) => {
+        if (!raw) return {};
+        // raw fields: temperature, humidity, eco2, rawH2/rawh2, rawEthanol, pressure, fireProbability, fireAlarm
+        const map = {};
+        if (raw.temperature !== undefined) map.Temperature = Number(raw.temperature);
+        else if (raw.Temperature !== undefined) map.Temperature = Number(raw.Temperature);
 
-          setSensorData(currentSensors);
-          setFireRisk(currentFireRisk);
-          setFireRiskProbability(currentFireRiskProbability);
-          setAlarmOn(currentAlarmOn);
+        if (raw.humidity !== undefined) map.Humidity = Number(raw.humidity);
+        else if (raw.Humidity !== undefined) map.Humidity = Number(raw.Humidity);
 
-          // build a simple history point with timestamp and a couple sensors
+        if (raw.eco2 !== undefined) map.eCO2 = Number(raw.eco2);
+        else if (raw.eCO2 !== undefined) map.eCO2 = Number(raw.eCO2);
+
+        // raw H2 field might be named rawH2, rawh2, or Raw H2 — normalize to 'Raw H2'
+        if (raw.rawH2 !== undefined) map['Raw H2'] = Number(raw.rawH2);
+        else if (raw.rawh2 !== undefined) map['Raw H2'] = Number(raw.rawh2);
+        else if (raw['Raw H2'] !== undefined) map['Raw H2'] = Number(raw['Raw H2']);
+
+        if (raw.rawEthanol !== undefined) map['Raw Ethanol'] = Number(raw.rawEthanol);
+        else if (raw.rawethanol !== undefined) map['Raw Ethanol'] = Number(raw.rawethanol);
+        else if (raw['Raw Ethanol'] !== undefined) map['Raw Ethanol'] = Number(raw['Raw Ethanol']);
+
+  if (raw.pressure !== undefined) map.Pressure = Number(raw.pressure);
+  else if (raw.Pressure !== undefined) map.Pressure = Number(raw.Pressure);
+
+        // fire indicators
+  const fireProb = raw.fireProbability !== undefined ? Number(raw.fireProbability) : raw.fireRiskProbability !== undefined ? Number(raw.fireRiskProbability) : null;
+        if (fireProb !== null) map.fireRiskProbability = fireProb;
+
+  const alarm = raw.fireAlarm !== undefined ? raw.fireAlarm : raw.alarmOn !== undefined ? raw.alarmOn : null;
+  if (alarm !== null) map.alarmOn = Boolean(Number(alarm));
+
+        // Some data includes a timestamp field
+        if (raw.timestamp !== undefined) map.timestamp = raw.timestamp;
+
+        return map;
+      };
+
+      // listen for current sensors at sensors/current
+      try {
+        const currentRef = ref(db, 'sensors/current');
+        const unsubCurrent = onValue(currentRef, (snap) => {
+          const data = snap.val();
+          if (!data) return;
+          const normalized = normalize(data);
+
+          // update UI state
+          setSensorData((prev) => ({ ...prev, ...normalized }));
+          if (normalized.fireRiskProbability !== undefined) setFireRiskProbability(normalized.fireRiskProbability);
+          if (normalized.alarmOn !== undefined) setAlarmOn(normalized.alarmOn);
+
+          // update history point
+          // round numeric values to two decimal places for display/history
+          const round = (v) => (v === null || v === undefined || Number.isNaN(v) ? null : Math.round(Number(v) * 100) / 100);
           const point = {
-            ts: new Date().toLocaleTimeString(),
-            Temperature: typeof currentSensors.Temperature === 'number' ? currentSensors.Temperature : null,
-            Humidity: typeof currentSensors.Humidity === 'number' ? currentSensors.Humidity : null,
+            ts: normalized.timestamp ? String(normalized.timestamp) : new Date().toLocaleTimeString(),
+            Temperature: round(normalized.Temperature ?? null),
+            Humidity: round(normalized.Humidity ?? null),
           };
-
           setHistory((prev) => {
-            const next = [...prev, point].slice(-30); // keep last 30
-            try {
-              localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-            } catch (e) {}
+            const next = [...prev, point].slice(-60);
+            try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch (e) {}
             return next;
           });
 
+          // persist last-known state for offline (round sensor numbers)
           try {
-            localStorage.setItem(
-              'firely_state',
-              JSON.stringify({
-                sensorData: currentSensors,
-                fireRisk: currentFireRisk,
-                fireRiskProbability: currentFireRiskProbability,
-                alarmOn: currentAlarmOn,
-              }),
-            );
-          } catch (e) {
-            // ignore storage errors
+            const roundedSensors = {};
+            if (normalized.Temperature !== undefined) roundedSensors.Temperature = round(normalized.Temperature);
+            if (normalized.Humidity !== undefined) roundedSensors.Humidity = round(normalized.Humidity);
+            if (normalized.eCO2 !== undefined) roundedSensors.eCO2 = round(normalized.eCO2);
+            if (normalized['Raw H2'] !== undefined) roundedSensors['Raw H2'] = round(normalized['Raw H2']);
+            if (normalized['Raw Ethanol'] !== undefined) roundedSensors['Raw Ethanol'] = round(normalized['Raw Ethanol']);
+            if (normalized.Pressure !== undefined) roundedSensors.Pressure = round(normalized.Pressure);
+
+            localStorage.setItem('firely_state', JSON.stringify({ sensorData: roundedSensors, fireRisk: false, fireRiskProbability: normalized.fireRiskProbability || 0, alarmOn: normalized.alarmOn || false }));
+          } catch (e) {}
+
+          // auto-enable alarm when a fire alarm flag is present or probability exceeds threshold
+          const AUTO_ALARM_THRESHOLD = 0.5; // configurable threshold
+          if (normalized.alarmOn === true || (normalized.fireRiskProbability !== undefined && normalized.fireRiskProbability >= AUTO_ALARM_THRESHOLD)) {
+            setAlarmOn(true);
+            // attempt to write back to known DB paths; tolerate failures
+            try { set(ref(db, 'sensorData/alarmOn'), true); } catch (e) {}
+            try { set(ref(db, 'sensors/current/fireAlarm'), 1); } catch (e) {}
           }
-        }
-      });
+        });
+        listeners.push(unsubCurrent);
+      } catch (e) {
+        // ignore
+      }
+
+      // try history under sensors/history then fallback to /history
+      try {
+        const histRef1 = ref(db, 'sensors/history');
+        const unsubHist1 = onValue(histRef1, (snap) => {
+          const raw = snap.val();
+          if (!raw) return;
+          const items = Object.keys(raw).sort().map((k) => ({ key: k, ...raw[k] }));
+          const mapped = items.slice(-60).map((it) => ({ ts: it.timestamp ?? String(it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null }));
+          setHistory(mapped);
+          try { localStorage.setItem(HISTORY_KEY, JSON.stringify(mapped)); } catch (e) {}
+        });
+        listeners.push(unsubHist1);
+      } catch (e) {}
+
+      try {
+        const histRef2 = ref(db, 'history');
+        const unsubHist2 = onValue(histRef2, (snap) => {
+          const raw = snap.val();
+          if (!raw) return;
+          const items = Object.keys(raw).sort().map((k) => ({ key: k, ...raw[k] }));
+          const mapped = items.slice(-60).map((it) => ({ ts: it.timestamp ?? String(it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null }));
+          setHistory(mapped);
+          try { localStorage.setItem(HISTORY_KEY, JSON.stringify(mapped)); } catch (e) {}
+        });
+        listeners.push(unsubHist2);
+      } catch (e) {}
 
       return () => {
-        if (typeof unsubscribe === 'function') unsubscribe();
+        listeners.forEach((u) => { try { if (typeof u === 'function') u(); } catch (e) {} });
       };
     } catch (e) {
       // If firebase isn't configured properly, just keep the restored local
