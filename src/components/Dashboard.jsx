@@ -3,7 +3,6 @@ import { db } from '../firebase';
 import { ref, onValue, set } from 'firebase/database';
 import SensorCard from './SensorCard';
 import StatusCard from './StatusCard';
-import AlarmButton from './AlarmButton';
 import './Dashboard.css';
 import Charts from './Charts';
 
@@ -13,7 +12,6 @@ const Dashboard = () => {
   const [sensorData, setSensorData] = useState({});
   const [fireRisk, setFireRisk] = useState(false);
   const [fireRiskProbability, setFireRiskProbability] = useState(0);
-  const [alarmOn, setAlarmOn] = useState(false);
   const [history, setHistory] = useState([]);
 
   // Try to restore last-known state from localStorage so the UI keeps
@@ -27,7 +25,6 @@ const Dashboard = () => {
         setSensorData(parsed.sensorData || {});
         setFireRisk(parsed.fireRisk || false);
         setFireRiskProbability(parsed.fireRiskProbability || 0);
-        setAlarmOn(parsed.alarmOn || false);
       }
     } catch (e) {
       // ignore parse errors
@@ -47,6 +44,14 @@ const Dashboard = () => {
     // property names to the UI shape.
     const listeners = [];
     try {
+      // helper to normalize various timestamp formats to milliseconds since
+      // epoch. If the value looks like seconds (10-digit) it will be
+      // converted to ms. Returns null when not a numeric timestamp.
+      const toMs = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return null;
+        return n < 1e12 ? n * 1000 : n;
+      };
       const normalize = (raw) => {
         if (!raw) return {};
         // raw fields: temperature, humidity, eco2, rawH2/rawh2, rawEthanol, pressure, fireProbability, fireAlarm
@@ -85,6 +90,30 @@ const Dashboard = () => {
         return map;
       };
 
+      // Flatten history structures. Supports both flat maps and date-bucketed maps
+      // (e.g. sensors/history/2025-10-14/{1760477413: {...}}).
+      const flattenHistory = (raw) => {
+        if (!raw || typeof raw !== 'object') return [];
+        const out = [];
+        Object.keys(raw).forEach((k) => {
+          const node = raw[k];
+          if (node && typeof node === 'object') {
+            // If the node looks like a single entry, push it.
+            const looksLikeEntry = 'unixTimestamp' in node || 'timestamp' in node || 'temperature' in node || 'fireProbability' in node || 'fireRiskProbability' in node;
+            if (looksLikeEntry) {
+              out.push({ key: k, ...node });
+            } else {
+              // Otherwise it's likely a bucket (date) containing entries.
+              Object.keys(node).forEach((childKey) => {
+                const child = node[childKey];
+                if (child && typeof child === 'object') out.push({ key: childKey, ...child });
+              });
+            }
+          }
+        });
+        return out;
+      };
+
       // listen for current sensors at sensors/current
       try {
         const currentRef = ref(db, 'sensors/current');
@@ -95,12 +124,31 @@ const Dashboard = () => {
 
           // update UI state
           setSensorData((prev) => ({ ...prev, ...normalized }));
-          if (normalized.fireRiskProbability !== undefined) setFireRiskProbability(normalized.fireRiskProbability);
-          if (normalized.alarmOn !== undefined) setAlarmOn(normalized.alarmOn);
+
+          // handle fire risk probability and set fireRisk state. Also write
+          // the derived alarm state to Firebase so downstream systems see it.
+          // Assumption: incoming probability is in [0,1]; threshold 0.5.
+          if (normalized.fireRiskProbability !== undefined) {
+            const prob = normalized.fireRiskProbability;
+            setFireRiskProbability(prob);
+            const THRESHOLD = 0.5;
+            const isRisk = prob >= THRESHOLD;
+            setFireRisk(isRisk);
+
+            // write alarm state (true when risk detected, false otherwise)
+            try {
+              set(ref(db, 'sensorData/alarmOn'), isRisk);
+            } catch (e) {
+              // ignore write errors
+            }
+          }
 
           // update history point
+          // Convert timestamp to ms where possible so charts can format
+          // consistently. Fall back to Date.now().
+          const tsMs = normalized.timestamp !== undefined ? (toMs(normalized.timestamp) ?? Date.now()) : Date.now();
           const point = {
-            ts: normalized.timestamp ? String(normalized.timestamp) : new Date().toLocaleTimeString(),
+            ts: tsMs,
             Temperature: normalized.Temperature ?? null,
             Humidity: normalized.Humidity ?? null,
           };
@@ -110,9 +158,11 @@ const Dashboard = () => {
             return next;
           });
 
-          // persist last-known state for offline
+            // persist last-known state for offline (store computed fireRisk)
           try {
-            localStorage.setItem('firely_state', JSON.stringify({ sensorData: { ...data, ...normalized }, fireRisk: false, fireRiskProbability: normalized.fireRiskProbability || 0, alarmOn: normalized.alarmOn || false }));
+            const persistedFireRisk = (normalized.fireRiskProbability !== undefined) ? (normalized.fireRiskProbability >= 0.5) : false;
+            const persistedAlarm = persistedFireRisk;
+            localStorage.setItem('firely_state', JSON.stringify({ sensorData: { ...data, ...normalized }, fireRisk: persistedFireRisk, fireRiskProbability: normalized.fireRiskProbability || 0, alarmOn: persistedAlarm }));
           } catch (e) {}
         });
         listeners.push(unsubCurrent);
@@ -126,8 +176,15 @@ const Dashboard = () => {
         const unsubHist1 = onValue(histRef1, (snap) => {
           const raw = snap.val();
           if (!raw) return;
-          const items = Object.keys(raw).sort().map((k) => ({ key: k, ...raw[k] }));
-          const mapped = items.slice(-60).map((it) => ({ ts: it.timestamp ?? String(it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null }));
+          const items = flattenHistory(raw).sort((a,b) => {
+            const ta = Number(a.unixTimestamp ?? a.timestamp ?? a.key);
+            const tb = Number(b.unixTimestamp ?? b.timestamp ?? b.key);
+            return (ta || 0) - (tb || 0);
+          });
+          const mapped = items.slice(-60).map((it) => {
+            const ts = toMs(it.unixTimestamp ?? it.timestamp ?? it.key);
+            return { ts: ts ?? String(it.unixTimestamp ?? it.timestamp ?? it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null };
+          });
           setHistory(mapped);
           try { localStorage.setItem(HISTORY_KEY, JSON.stringify(mapped)); } catch (e) {}
         });
@@ -139,8 +196,15 @@ const Dashboard = () => {
         const unsubHist2 = onValue(histRef2, (snap) => {
           const raw = snap.val();
           if (!raw) return;
-          const items = Object.keys(raw).sort().map((k) => ({ key: k, ...raw[k] }));
-          const mapped = items.slice(-60).map((it) => ({ ts: it.timestamp ?? String(it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null }));
+          const items = flattenHistory(raw).sort((a,b) => {
+            const ta = Number(a.unixTimestamp ?? a.timestamp ?? a.key);
+            const tb = Number(b.unixTimestamp ?? b.timestamp ?? b.key);
+            return (ta || 0) - (tb || 0);
+          });
+          const mapped = items.slice(-60).map((it) => {
+            const ts = toMs(it.unixTimestamp ?? it.timestamp ?? it.key);
+            return { ts: ts ?? String(it.unixTimestamp ?? it.timestamp ?? it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null };
+          });
           setHistory(mapped);
           try { localStorage.setItem(HISTORY_KEY, JSON.stringify(mapped)); } catch (e) {}
         });
@@ -197,8 +261,8 @@ const Dashboard = () => {
           <SensorCard sensorName="Pressure" value={sensorData.Pressure} unit="hPa" />
         </div>
         <div className="status-section">
-          <StatusCard fireRisk={fireRisk} fireRiskProbability={fireRiskProbability} />
-          <AlarmButton alarmOn={alarmOn} onClick={handleAlarmClick} />
+          {/* alarm is now driven automatically by fireRisk */}
+          <StatusCard fireRisk={fireRisk} fireRiskProbability={fireRiskProbability} alarmOn={fireRisk} />
         </div>
       </div>
       <div className="charts-wrapper">
