@@ -1,8 +1,8 @@
 .sensor-card {
-  background-color: #fff;
-  border-radius: 8px;
-  padding: 20px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  padding: 18px 14px;
+  box-shadow: 0 8px 24px rgba(2,6,23,0.45);
   text-align: center;
 }
 
@@ -13,6 +13,18 @@
 
 .sensor-card p {
   margin: 0;
-  font-size: 24px;
-  color: #333;
+  font-size: 22px;
+  color: var(--text);
+}
+
+.sensor-card h3 { color: var(--muted); font-weight: 600; }
+
+@media (max-width: 600px) {
+  .sensor-card {
+    padding: 12px;
+  }
+  .sensor-card p {
+    font-size: 18px;
+  }
+  .sensor-card h3 { font-size: 0.95rem; }
 }

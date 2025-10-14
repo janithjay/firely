@@ -1,15 +1,16 @@
+/* root container */
 #root {
-  max-width: 1280px;
+  max-width: var(--container-max);
   margin: 0 auto;
-  padding: 2rem;
+  padding: calc(var(--gap) * 1.25);
   text-align: center;
 }
 
 .logo {
-  height: 6em;
-  padding: 1.5em;
+  height: 5.2em;
+  padding: 1rem;
   will-change: filter;
-  transition: filter 300ms;
+  transition: filter 300ms, transform 200ms;
 }
 .logo:hover {
   filter: drop-shadow(0 0 2em #646cffaa);
@@ -35,6 +36,14 @@
 
 .card {
   padding: 2em;
+  background: var(--glass);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(2,6,23,0.5);
+}
+
+@media (max-width: 600px) {
+  #root { padding: 1rem; }
+  .card { padding: 1rem; }
 }
 
 .read-the-docs {

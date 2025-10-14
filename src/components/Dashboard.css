@@ -1,12 +1,13 @@
 .dashboard {
-  font-family: sans-serif;
-  padding: 20px;
-  background-color: #f4f7f6;
+  font-family: var(--font-sans);
+  padding: calc(var(--gap) * 0.8);
+  color: var(--text);
 }
 
 h1 {
   text-align: center;
-  color: #333;
+  color: var(--text);
+  margin-bottom: 0.25rem;
 }
 
 .main-content {
@@ -23,9 +24,55 @@ h1 {
   flex: 3;
 }
 
+.sensor-grid > * {
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0;
+}
+
 .status-section {
   display: flex;
   flex-direction: column;
   gap: 20px;
   flex: 1;
+}
+
+.charts-wrapper {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+}
+
+/* Responsive adjustments */
+@media (max-width: 900px) {
+  .main-content {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sensor-grid {
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    width: 100%;
+  }
+
+  .status-section {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .status-section > * {
+    flex: 1 1 48%;
+  }
+}
+
+@media (max-width: 480px) {
+  .status-section {
+    flex-direction: column;
+  }
+  .status-section > * {
+    flex-basis: 100%;
+  }
+  h1 { font-size: 1.6rem; }
 }
