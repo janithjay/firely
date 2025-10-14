@@ -69,15 +69,15 @@ const Dashboard = () => {
         else if (raw.rawethanol !== undefined) map['Raw Ethanol'] = Number(raw.rawethanol);
         else if (raw['Raw Ethanol'] !== undefined) map['Raw Ethanol'] = Number(raw['Raw Ethanol']);
 
-  if (raw.pressure !== undefined) map.Pressure = Number(raw.pressure);
-  else if (raw.Pressure !== undefined) map.Pressure = Number(raw.Pressure);
+        if (raw.pressure !== undefined) map.Pressure = Number(raw.pressure);
+        else if (raw.Pressure !== undefined) map.Pressure = Number(raw.Pressure);
 
         // fire indicators
-  const fireProb = raw.fireProbability !== undefined ? Number(raw.fireProbability) : raw.fireRiskProbability !== undefined ? Number(raw.fireRiskProbability) : null;
+        const fireProb = raw.fireProbability !== undefined ? Number(raw.fireProbability) : raw.fireRiskProbability !== undefined ? Number(raw.fireRiskProbability) : null;
         if (fireProb !== null) map.fireRiskProbability = fireProb;
 
-  const alarm = raw.fireAlarm !== undefined ? raw.fireAlarm : raw.alarmOn !== undefined ? raw.alarmOn : null;
-  if (alarm !== null) map.alarmOn = Boolean(Number(alarm));
+        const alarm = raw.fireAlarm !== undefined ? raw.fireAlarm : raw.alarmOn !== undefined ? raw.alarmOn : null;
+        if (alarm !== null) map.alarmOn = Boolean(Number(alarm));
 
         // Some data includes a timestamp field
         if (raw.timestamp !== undefined) map.timestamp = raw.timestamp;
@@ -99,12 +99,10 @@ const Dashboard = () => {
           if (normalized.alarmOn !== undefined) setAlarmOn(normalized.alarmOn);
 
           // update history point
-          // round numeric values to two decimal places for display/history
-          const round = (v) => (v === null || v === undefined || Number.isNaN(v) ? null : Math.round(Number(v) * 100) / 100);
           const point = {
             ts: normalized.timestamp ? String(normalized.timestamp) : new Date().toLocaleTimeString(),
-            Temperature: round(normalized.Temperature ?? null),
-            Humidity: round(normalized.Humidity ?? null),
+            Temperature: normalized.Temperature ?? null,
+            Humidity: normalized.Humidity ?? null,
           };
           setHistory((prev) => {
             const next = [...prev, point].slice(-60);
@@ -112,27 +110,10 @@ const Dashboard = () => {
             return next;
           });
 
-          // persist last-known state for offline (round sensor numbers)
+          // persist last-known state for offline
           try {
-            const roundedSensors = {};
-            if (normalized.Temperature !== undefined) roundedSensors.Temperature = round(normalized.Temperature);
-            if (normalized.Humidity !== undefined) roundedSensors.Humidity = round(normalized.Humidity);
-            if (normalized.eCO2 !== undefined) roundedSensors.eCO2 = round(normalized.eCO2);
-            if (normalized['Raw H2'] !== undefined) roundedSensors['Raw H2'] = round(normalized['Raw H2']);
-            if (normalized['Raw Ethanol'] !== undefined) roundedSensors['Raw Ethanol'] = round(normalized['Raw Ethanol']);
-            if (normalized.Pressure !== undefined) roundedSensors.Pressure = round(normalized.Pressure);
-
-            localStorage.setItem('firely_state', JSON.stringify({ sensorData: roundedSensors, fireRisk: false, fireRiskProbability: normalized.fireRiskProbability || 0, alarmOn: normalized.alarmOn || false }));
+            localStorage.setItem('firely_state', JSON.stringify({ sensorData: { ...data, ...normalized }, fireRisk: false, fireRiskProbability: normalized.fireRiskProbability || 0, alarmOn: normalized.alarmOn || false }));
           } catch (e) {}
-
-          // auto-enable alarm when a fire alarm flag is present or probability exceeds threshold
-          const AUTO_ALARM_THRESHOLD = 0.5; // configurable threshold
-          if (normalized.alarmOn === true || (normalized.fireRiskProbability !== undefined && normalized.fireRiskProbability >= AUTO_ALARM_THRESHOLD)) {
-            setAlarmOn(true);
-            // attempt to write back to known DB paths; tolerate failures
-            try { set(ref(db, 'sensorData/alarmOn'), true); } catch (e) {}
-            try { set(ref(db, 'sensors/current/fireAlarm'), 1); } catch (e) {}
-          }
         });
         listeners.push(unsubCurrent);
       } catch (e) {
