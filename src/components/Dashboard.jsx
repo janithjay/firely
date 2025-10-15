@@ -277,7 +277,7 @@ const Dashboard = () => {
 
   return (
     <div className="dashboard">
-      <h1>IoT Dashboard</h1>
+      <h1>Firely Dashboard</h1>
       <div className="main-content">
         <div className="sensor-grid">
           <SensorCard sensorName="Temperature" value={sensorData.Temperature} unit="°C" />
