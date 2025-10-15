@@ -16,7 +16,7 @@ const StatusCard = ({ fireRisk, fireRiskProbability, alarmOn }) => {
       <div style={{ marginTop: 12 }}>
         {/* Large visual alarm pill (non-interactive) to match provided design */}
         <div className={`alarm-pill ${alarm ? 'on' : 'off'}`} role="status" aria-live="polite">
-          {alarm ? 'Turn Off Alarm' : 'Alarm Off'}
+          {alarm ? 'Alarm On' : 'Alarm Off'}
         </div>
       </div>
     </div>

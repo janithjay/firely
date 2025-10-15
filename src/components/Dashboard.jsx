@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { db } from '../firebase';
 import { ref, onValue, set } from 'firebase/database';
 import SensorCard from './SensorCard';
 import StatusCard from './StatusCard';
 import './Dashboard.css';
 import Charts from './Charts';
+import FireHistoryTable from './FireHistoryTable';
 
 const HISTORY_KEY = 'firely_history_v1';
 
@@ -13,6 +14,7 @@ const Dashboard = () => {
   const [fireRisk, setFireRisk] = useState(false);
   const [fireRiskProbability, setFireRiskProbability] = useState(0);
   const [history, setHistory] = useState([]);
+  const prevFireRef = useRef(false);
 
   // Try to restore last-known state from localStorage so the UI keeps
   // previously shown data when Firebase is unavailable or before the first
@@ -90,6 +92,48 @@ const Dashboard = () => {
         return map;
       };
 
+      // notify the user with a browser notification (and play a short beep)
+      const notifyUser = (prob) => {
+        try {
+          if (!('Notification' in window)) return;
+          const show = () => {
+            try {
+              const title = 'Fire Risk Detected';
+              const body = `Probability: ${(Number(prob) * 100).toFixed(2)}%`;
+              new Notification(title, { body, icon: '/vite.svg' });
+            } catch (e) {}
+          };
+
+          if (Notification.permission === 'granted') {
+            show();
+          } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then((perm) => { if (perm === 'granted') show(); });
+          }
+
+          // small beep using WebAudio
+          try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+              const ctx = new AudioCtx();
+              const o = ctx.createOscillator();
+              const g = ctx.createGain();
+              o.type = 'sine';
+              o.frequency.value = 880;
+              o.connect(g);
+              g.connect(ctx.destination);
+              const now = ctx.currentTime;
+              g.gain.setValueAtTime(0.0001, now);
+              g.gain.exponentialRampToValueAtTime(0.2, now + 0.01);
+              o.start(now);
+              g.gain.exponentialRampToValueAtTime(0.0001, now + 1.0);
+              o.stop(now + 1.05);
+              // close context after a short delay
+              setTimeout(() => { try { ctx.close(); } catch (e) {} }, 1200);
+            }
+          } catch (e) {}
+        } catch (e) {}
+      };
+
       // Flatten history structures. Supports both flat maps and date-bucketed maps
       // (e.g. sensors/history/2025-10-14/{1760477413: {...}}).
       const flattenHistory = (raw) => {
@@ -133,7 +177,13 @@ const Dashboard = () => {
             setFireRiskProbability(prob);
             const THRESHOLD = 0.5;
             const isRisk = prob >= THRESHOLD;
+            // detect rising edge and notify once when transitioning to risk
+            const wasRisk = prevFireRef.current;
             setFireRisk(isRisk);
+            if (!wasRisk && isRisk) {
+              notifyUser(prob);
+            }
+            prevFireRef.current = isRisk;
 
             // write alarm state (true when risk detected, false otherwise)
             try {
@@ -151,6 +201,9 @@ const Dashboard = () => {
             ts: tsMs,
             Temperature: normalized.Temperature ?? null,
             Humidity: normalized.Humidity ?? null,
+            fireProbability: normalized.fireRiskProbability ?? normalized.fireProbability ?? null,
+            fireAlarm: normalized.alarmOn ?? null,
+            unixTimestamp: normalized.timestamp ?? null,
           };
           setHistory((prev) => {
             const next = [...prev, point].slice(-60);
@@ -183,7 +236,7 @@ const Dashboard = () => {
           });
           const mapped = items.slice(-60).map((it) => {
             const ts = toMs(it.unixTimestamp ?? it.timestamp ?? it.key);
-            return { ts: ts ?? String(it.unixTimestamp ?? it.timestamp ?? it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null };
+            return { ts: ts ?? String(it.unixTimestamp ?? it.timestamp ?? it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null, fireProbability: it.fireProbability ?? it.fireRiskProbability ?? null, fireAlarm: it.fireAlarm ?? null, unixTimestamp: it.unixTimestamp ?? null, dateTime: it.dateTime ?? null, key: it.key };
           });
           setHistory(mapped);
           try { localStorage.setItem(HISTORY_KEY, JSON.stringify(mapped)); } catch (e) {}
@@ -203,7 +256,7 @@ const Dashboard = () => {
           });
           const mapped = items.slice(-60).map((it) => {
             const ts = toMs(it.unixTimestamp ?? it.timestamp ?? it.key);
-            return { ts: ts ?? String(it.unixTimestamp ?? it.timestamp ?? it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null };
+            return { ts: ts ?? String(it.unixTimestamp ?? it.timestamp ?? it.key), Temperature: it.temperature ?? it.Temperature ?? null, Humidity: it.humidity ?? it.Humidity ?? null, fireProbability: it.fireProbability ?? it.fireRiskProbability ?? null, fireAlarm: it.fireAlarm ?? null, unixTimestamp: it.unixTimestamp ?? null, dateTime: it.dateTime ?? null, key: it.key };
           });
           setHistory(mapped);
           try { localStorage.setItem(HISTORY_KEY, JSON.stringify(mapped)); } catch (e) {}
@@ -220,33 +273,7 @@ const Dashboard = () => {
     }
   }, []);
 
-  const handleAlarmClick = () => {
-    // Optimistically update UI and persist the change locally, then attempt
-    // to write to Firebase. If Firebase write fails the local state remains
-    // — you can add error handling to revert if you want.
-    const newAlarm = !alarmOn;
-    setAlarmOn(newAlarm);
-    try {
-      localStorage.setItem(
-        'firely_state',
-        JSON.stringify({
-          sensorData,
-          fireRisk,
-          fireRiskProbability,
-          alarmOn: newAlarm,
-        }),
-      );
-    } catch (e) {
-      // ignore storage errors
-    }
-
-    try {
-      set(ref(db, 'sensorData/alarmOn'), newAlarm);
-    } catch (e) {
-      // If writing to Firebase fails (for example, missing config), we leave
-      // the optimistic local state in place. Consider notifying the user.
-    }
-  };
+  // manual alarm control removed; alarm is driven automatically by fireRisk
 
   return (
     <div className="dashboard">
@@ -268,6 +295,7 @@ const Dashboard = () => {
       <div className="charts-wrapper">
         <Charts history={history} />
       </div>
+      <FireHistoryTable history={history} />
     </div>
   );
 };
